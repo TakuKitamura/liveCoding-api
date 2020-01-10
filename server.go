@@ -79,11 +79,16 @@ func liveRequest() http.HandlerFunc {
 				responseErrorJSON(w, http.StatusInternalServerError, err.Error())
 				return
 			}
-			liveRequest := LiveRequest{}
+			liveRequest := LiveRequest{ID: -1}
 
 			err = json.Unmarshal(requestBody, &liveRequest)
 			if err != nil {
 				responseErrorJSON(w, http.StatusInternalServerError, err.Error())
+				return
+			}
+
+			if liveRequest.ID == -1 {
+				responseErrorJSON(w, http.StatusInternalServerError, "ID not found.")
 				return
 			}
 
@@ -152,6 +157,13 @@ func liveRequest() http.HandlerFunc {
 								}
 
 								err = w.Checkout(&git.CheckoutOptions{
+									Branch: plumbing.NewBranchReferenceName("master"),
+								})
+								if err != nil {
+									return err
+								}
+
+								err = w.Checkout(&git.CheckoutOptions{
 									Hash: plumbing.NewHash(liveResponse.Hash),
 								})
 								if err != nil {
@@ -164,6 +176,13 @@ func liveRequest() http.HandlerFunc {
 								fmt.Println(path)
 
 								files[path] = string(bytes)
+
+								err = w.Checkout(&git.CheckoutOptions{
+									Branch: plumbing.NewBranchReferenceName("master"),
+								})
+								if err != nil {
+									return err
+								}
 							}
 						}
 					}
