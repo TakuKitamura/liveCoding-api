@@ -42,61 +42,57 @@ func main() {
 
 	i := 0
 	for {
-		time.Sleep(time.Millisecond * 100)
+
+		time.Sleep(time.Second * 1)
 
 		// TODO: 対応があれば置き換え｡
 		// _, err := w.Add(".")
 		// CheckIfError(err)
 
-		w.Checkout(&git.CheckoutOptions{
-			Branch: plumbing.NewBranchReferenceName("master"),
-		})
 		// CheckIfError(err)
 
-		cmd := exec.Command("git", "add", ".")
-		cmd.Dir = w.Filesystem.Root()
-		err = cmd.Run()
-		CheckIfError(err)
-
 		status, err := w.Status()
-		CheckIfError(err)
+		if err != nil {
+			continue
+		}
+
 		if len(status) != 0 {
+			cmd := exec.Command("git", "add", ".")
+			cmd.Dir = w.Filesystem.Root()
+			err = cmd.Run()
+			if err != nil {
+				continue
+			}
+
 			commit, err := w.Commit(strconv.FormatInt(time.Now().UnixNano(), 10), &git.CommitOptions{
 				Author: &object.Signature{
 					When: time.Now(),
 				},
 			})
-			CheckIfError(err)
+			if err != nil {
+				continue
+			}
+
+			w.Checkout(&git.CheckoutOptions{
+				Branch: plumbing.NewBranchReferenceName("master"),
+			})
+
 			obj, err := r.CommitObject(commit)
-			CheckIfError(err)
+			if err != nil {
+				continue
+			}
 
 			ctx, _ := context.WithTimeout(context.Background(), 10*time.Second)
 			client, err := mongo.Connect(ctx, options.Client().ApplyURI("mongodb://localhost:27017"))
-			CheckIfError(err)
+			if err != nil {
+				continue
+			}
 			defer client.Disconnect(ctx)
 
-			// files := map[string]string{}
-			// err = filepath.Walk(directory,
-			// 	func(path string, info os.FileInfo, err error) error {
-			// 		CheckIfError(err)
-			// 		if path != directory {
-			// 			if strings.HasPrefix(path, directory+".git") == false {
-			// 				file, err := os.Stat(path)
-			// 				CheckIfError(err)
-			// 				if file.Mode().IsRegular() {
-			// 					bytes, err := ioutil.ReadFile(path)
-			// 					CheckIfError(err)
-			// 					files[path] = string(bytes)
-			// 					i += 1
-			// 				}
-			// 			}
-			// 		}
-			// 		return nil
-			// 	})
-			// CheckIfError(err)
-
 			commitTime, err := strconv.ParseInt(obj.Message, 10, 64)
-			CheckIfError(err)
+			if err != nil {
+				continue
+			}
 
 			commitStruct := Commit{
 				ProjectName: "test",
@@ -107,7 +103,9 @@ func main() {
 			}
 			commit_collection := client.Database("liveCoding").Collection("commit")
 			_, err = commit_collection.InsertOne(ctx, commitStruct)
-			CheckIfError(err)
+			if err != nil {
+				continue
+			}
 
 			i++
 

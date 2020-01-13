@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"io/ioutil"
 	"log"
@@ -18,6 +19,17 @@ import (
 	"gopkg.in/src-d/go-git.v4"
 	"gopkg.in/src-d/go-git.v4/plumbing"
 )
+
+type Config struct {
+	Schema string `json:"schema"`
+	Host   string `json:"host"`
+	Port   string `json:"port"`
+}
+
+type Configs struct {
+	Test    Config `json:"test"`
+	Product Config `json:"product"`
+}
 
 type LiveRequest struct {
 	ID int `json:"id" bson:"id"`
@@ -87,10 +99,10 @@ func liveRequest() http.HandlerFunc {
 				return
 			}
 
-			if liveRequest.ID == -1 {
-				responseErrorJSON(w, http.StatusInternalServerError, "ID not found.")
-				return
-			}
+			// if liveRequest.ID == -1 {
+			// 	responseErrorJSON(w, http.StatusInternalServerError, "ID not found.")
+			// 	return
+			// }
 
 			ctx, _ := context.WithTimeout(context.Background(), 10*time.Second)
 			client, err := mongo.Connect(ctx, options.Client().ApplyURI("mongodb://localhost:27017"))
@@ -103,99 +115,114 @@ func liveRequest() http.HandlerFunc {
 			liveCodingCollection := client.Database("liveCoding").Collection("commit")
 
 			fmt.Println(liveRequest.ID)
-			filter := bson.M{"id": liveRequest.ID}
-			r := liveCodingCollection.FindOne(ctx, filter)
+			filter := bson.M{}
+			cur, err := liveCodingCollection.Find(ctx, filter)
 			if err != nil {
 				responseErrorJSON(w, http.StatusInternalServerError, err.Error())
 				return
 			}
 
-			liveResponse := LiveResponse{}
-
-			err = r.Decode(&liveResponse)
+			livesResponse := LivesResponse{}
+			err = cur.All(ctx, &livesResponse)
 			if err != nil {
 				responseErrorJSON(w, http.StatusInternalServerError, err.Error())
 				return
 			}
 
+			fmt.Println(livesResponse)
 			// err = cur.All(ctx, &livesResponse)
 			// if err != nil {
 			// 	responseErrorJSON(w, http.StatusInternalServerError, err.Error())
 			// 	return
 			// }
 
-			fmt.Println(liveResponse)
+			// fmt.Println(livesResponse)
 
-			files := map[string]string{}
-			err = filepath.Walk(liveResponse.ProjectName,
-				func(path string, info os.FileInfo, err error) error {
+			for i := 0; i < len(livesResponse); i++ {
+				liveResponse := livesResponse[i]
+
+				// TODO: for の外に出す｡
+				var repo *git.Repository
+				if _, err := os.Stat(liveResponse.ProjectName); os.IsNotExist(err) {
+					repo, err = git.PlainInit(liveResponse.ProjectName, false)
 					if err != nil {
-						return err
+						responseErrorJSON(w, http.StatusInternalServerError, err.Error())
+						return
 					}
-					if path != liveResponse.ProjectName {
-						if strings.HasPrefix(path, liveResponse.ProjectName+"/.git") == false {
-							file, err := os.Stat(path)
-							if err != nil {
-								return err
-							}
-							if file.Mode().IsRegular() {
-								var r *git.Repository
-								if _, err := os.Stat(liveResponse.ProjectName); os.IsNotExist(err) {
-									r, err = git.PlainInit(liveResponse.ProjectName, false)
+				} else {
+					repo, err = git.PlainOpen(liveResponse.ProjectName)
+					if err != nil {
+						responseErrorJSON(w, http.StatusInternalServerError, err.Error())
+						return
+					}
+				}
+
+				wt, err := repo.Worktree()
+				if err != nil {
+					responseErrorJSON(w, http.StatusInternalServerError, err.Error())
+					return
+				}
+
+				err = wt.Checkout(&git.CheckoutOptions{
+					Branch: plumbing.NewBranchReferenceName("master"),
+				})
+				if err != nil {
+					responseErrorJSON(w, http.StatusInternalServerError, err.Error())
+					return
+				}
+
+				err = wt.Checkout(&git.CheckoutOptions{
+					Hash: plumbing.NewHash(liveResponse.Hash),
+				})
+				if err != nil {
+					responseErrorJSON(w, http.StatusInternalServerError, err.Error())
+					return
+				}
+
+				files := map[string]string{}
+				walkErr := filepath.Walk(liveResponse.ProjectName,
+					func(path string, info os.FileInfo, err error) error {
+						if err != nil {
+							return err
+						}
+						if path != liveResponse.ProjectName {
+							if strings.HasPrefix(path, liveResponse.ProjectName+"/.git") == false {
+								file, err := os.Stat(path)
+								if err != nil {
+									return err
+								}
+								if file.Mode().IsRegular() {
+
+									bytes, err := ioutil.ReadFile(path)
 									if err != nil {
 										return err
 									}
-								} else {
-									r, err = git.PlainOpen(liveResponse.ProjectName)
-									if err != nil {
-										return err
-									}
-								}
-								w, err := r.Worktree()
-								if err != nil {
-									return err
-								}
+									fmt.Println(path)
 
-								err = w.Checkout(&git.CheckoutOptions{
-									Branch: plumbing.NewBranchReferenceName("master"),
-								})
-								if err != nil {
-									return err
-								}
-
-								err = w.Checkout(&git.CheckoutOptions{
-									Hash: plumbing.NewHash(liveResponse.Hash),
-								})
-								if err != nil {
-									return err
-								}
-								bytes, err := ioutil.ReadFile(path)
-								if err != nil {
-									return err
-								}
-								fmt.Println(path)
-
-								files[path] = string(bytes)
-
-								err = w.Checkout(&git.CheckoutOptions{
-									Branch: plumbing.NewBranchReferenceName("master"),
-								})
-								if err != nil {
-									return err
+									files[path] = string(bytes)
 								}
 							}
 						}
-					}
-					return nil
+						return nil
+					})
+
+				err = wt.Checkout(&git.CheckoutOptions{
+					Branch: plumbing.NewBranchReferenceName("master"),
 				})
-			if err != nil {
-				responseErrorJSON(w, http.StatusInternalServerError, err.Error())
-				return
+				if err != nil {
+					responseErrorJSON(w, http.StatusInternalServerError, err.Error())
+					return
+				}
+
+				if walkErr != nil {
+					responseErrorJSON(w, http.StatusInternalServerError, err.Error())
+					return
+				}
+				fmt.Println(111, files)
+				livesResponse[i].Files = files
 			}
-
-			liveResponse.Files = files
-
-			responseJSON(w, http.StatusOK, liveResponse)
+			fmt.Println(livesResponse)
+			responseJSON(w, http.StatusOK, livesResponse)
 			return
 
 		default:
@@ -208,12 +235,66 @@ func liveRequest() http.HandlerFunc {
 }
 
 func main() {
+	flag.Parse()
+	args := flag.Args()
+
+	if len(args) != 1 {
+		fmt.Println("args are invalid.")
+		return
+	}
+
+	configsJSON, err := ioutil.ReadFile("config.json")
+	if err != nil {
+		log.Println(err)
+		os.Exit(1)
+	}
+
+	configs := Configs{}
+
+	err = json.Unmarshal(configsJSON, &configs)
+	if err != nil {
+		log.Println(err)
+		os.Exit(1)
+	}
+
+	envType := flag.Arg(0)
+
+	const envTypeTest = "test"
+	const envTypeProduct = "product"
+
+	config := Config{}
+	if envType == envTypeTest {
+		config = configs.Test
+	} else if envType == envTypeProduct {
+		config = configs.Product
+	} else {
+		log.Println("config-type is invalid.")
+		os.Exit(1)
+	}
+
 	apiEndpointName := "/api"
 	liveEndpointName := apiEndpointName + "/live"
 	http.HandleFunc(liveEndpointName, liveRequest())
-	err := http.ListenAndServe("localhost:3000", nil)
-	if err != nil {
-		log.Println(err)
+	schema := config.Schema
+	host := config.Host
+	port := config.Port
+	addr := host + ":" + port
+	fmt.Println("LISTEN: ", schema+"://"+addr)
+	// 証明書の作成参考: https://ozuma.hatenablog.jp/entry/20130511/1368284304
+	if envType == envTypeTest {
+		err = http.ListenAndServeTLS(addr, "cert_key/test/cert.pem", "cert_key/test/key.pem", nil)
+		if err != nil {
+			log.Println(err)
+			os.Exit(1)
+		}
+	} else if envType == envTypeProduct {
+		err = http.ListenAndServeTLS(addr, "cert_key/product/cert.pem", "cert_key/product/key.pem", nil)
+		if err != nil {
+			log.Println(err)
+			os.Exit(1)
+		}
+	} else {
+		log.Println("config-type is invalid.")
 		os.Exit(1)
 	}
 }
