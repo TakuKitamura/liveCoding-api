@@ -17,6 +17,7 @@ import (
 
 type Commit struct {
 	ProjectName string `bson:"project_name"`
+	projectPath string `bson:"project_path"`
 	Hash        string `bson:"hash"`
 	Time        int64  `bson:"time"`
 	ID          int    `bson:"id"`

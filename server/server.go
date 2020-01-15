@@ -35,12 +35,18 @@ type LiveRequest struct {
 	ID int `json:"id" bson:"id"`
 }
 
+type FileInfo struct {
+	Code string `json:"code" bson:"code"`
+	Lang string `json:"lang" bson:"lang"`
+	Commands
+}
+
 type LiveResponse struct {
-	ProjectName string            `json:"projectName" bson:"project_name"`
-	Hash        string            `json:"hash" bson:"hash"`
-	Time        int64             `json:"time" bson:"time"`
-	ID          int               `json:"id" bson:"id"`
-	Files       map[string]string `json:"files" bson:"files"`
+	ProjectName string               `json:"projectName" bson:"project_name"`
+	Hash        string               `json:"hash" bson:"hash"`
+	Time        int64                `json:"time" bson:"time"`
+	ID          int                  `json:"id" bson:"id"`
+	Files       map[string]*FileInfo `json:"files" bson:"files"`
 }
 
 type LivesResponse []LiveResponse
@@ -179,7 +185,7 @@ func liveRequest() http.HandlerFunc {
 					return
 				}
 
-				files := map[string]string{}
+				fileInfo := map[string]*FileInfo{}
 				walkErr := filepath.Walk(liveResponse.ProjectName,
 					func(path string, info os.FileInfo, err error) error {
 						if err != nil {
@@ -198,8 +204,26 @@ func liveRequest() http.HandlerFunc {
 										return err
 									}
 									fmt.Println(path)
+									code := string(bytes)
+									fileInfo[path].Code = code
 
-									files[path] = string(bytes)
+									pos := strings.LastIndex(path, ".")
+
+									plaintext := "plaintext"
+
+									// ex a.py -> py
+									extention := path[pos+1:]
+									if len(extention) == 0 {
+										fileInfo[path].Lang = plaintext
+									} else {
+										if extention == "py" {
+											fileInfo[path].Lang = "python"
+										} else {
+											fileInfo[path].Lang = plaintext
+										}
+									}
+
+									err, commands := getCommands(fileInfo[path].Code, fileInfo[path].Lang)
 								}
 							}
 						}
@@ -218,8 +242,8 @@ func liveRequest() http.HandlerFunc {
 					responseErrorJSON(w, http.StatusInternalServerError, err.Error())
 					return
 				}
-				fmt.Println(111, files)
-				livesResponse[i].Files = files
+				// fmt.Println(111, files)
+				livesResponse[i].Files = fileInfo
 			}
 			fmt.Println(livesResponse)
 			responseJSON(w, http.StatusOK, livesResponse)
@@ -235,6 +259,7 @@ func liveRequest() http.HandlerFunc {
 }
 
 func main() {
+	fmt.Println(23)
 	flag.Parse()
 	args := flag.Args()
 
