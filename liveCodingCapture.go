@@ -3,15 +3,37 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"fmt"
 	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"time"
+
+	"go.mongodb.org/mongo-driver/mongo"
+	"go.mongodb.org/mongo-driver/mongo/options"
+	git "gopkg.in/src-d/go-git.v4"
+	"gopkg.in/src-d/go-git.v4/plumbing"
+	"gopkg.in/src-d/go-git.v4/plumbing/object"
 )
 
+type Commit struct {
+	ProjectPath string `bson:"project_path"`
+	ProjectName string `bson:"project_name"`
+	projectPath string `bson:"project_path"`
+	Hash        string `bson:"hash"`
+	Time        int64  `bson:"time"`
+	ID          int    `bson:"id"`
+	// Files       map[string]string `bson:"files"`
+}
+
+var liveStart bool
+
 const CUI_LOG = ".cui.log"
+const LIVE_CODING_PATH = "/Users/kitamurataku/work/liveCoding"
 
 func remove(strings []string, search string) []string {
 	result := []string{}
@@ -55,11 +77,95 @@ func liveCommandUsage(projectPath string) {
 	writeCommandOut(out, projectPath, false)
 }
 
+func watch(r *git.Repository, projectPath string) error {
+	i := 0
+	w, err := r.Worktree()
+	if err != nil {
+		return err
+	}
+
+	for {
+		if liveStart == false {
+			return nil
+		}
+
+		time.Sleep(time.Second * 1)
+
+		// TODO: 対応があれば置き換え｡
+		// _, err := w.Add(".")
+		// CheckIfError(err)
+
+		// CheckIfError(err)
+
+		status, err := w.Status()
+		if err != nil {
+			continue
+		}
+		// fmt.Println(status.String())
+
+		if len(status) != 0 {
+			cmd := exec.Command("git", "add", projectPath)
+			cmd.Dir = w.Filesystem.Root()
+			err = cmd.Run()
+			if err != nil {
+				continue
+			}
+
+			commit, err := w.Commit(strconv.FormatInt(time.Now().UnixNano(), 10), &git.CommitOptions{
+				Author: &object.Signature{
+					When: time.Now(),
+				},
+			})
+			if err != nil {
+				continue
+			}
+
+			w.Checkout(&git.CheckoutOptions{
+				Branch: plumbing.NewBranchReferenceName("master"),
+			})
+
+			obj, err := r.CommitObject(commit)
+			if err != nil {
+				continue
+			}
+
+			ctx, _ := context.WithTimeout(context.Background(), 10*time.Second)
+			client, err := mongo.Connect(ctx, options.Client().ApplyURI("mongodb://localhost:27017"))
+			if err != nil {
+				continue
+			}
+			defer client.Disconnect(ctx)
+
+			commitTime, err := strconv.ParseInt(obj.Message, 10, 64)
+			if err != nil {
+				continue
+			}
+
+			commitStruct := Commit{
+				ProjectPath: projectPath,
+				ProjectName: "test",
+				Hash:        obj.Hash.String(),
+				Time:        commitTime,
+				ID:          i,
+				// Files:       files,
+			}
+			commit_collection := client.Database("liveCoding").Collection("commit")
+			_, err = commit_collection.InsertOne(ctx, commitStruct)
+			if err != nil {
+				continue
+			}
+
+			i++
+
+		}
+	}
+}
+
 func main() {
 	projectPath := ""
 	buffer := &bytes.Buffer{}
 	writer := buffer
-	liveStart := false
+	liveStart = false
 
 	fmt.Println("\x1b[32mWelcome Live Coding Capture! (v0.0.1)\x1b[0m")
 
@@ -171,6 +277,16 @@ func main() {
 						}
 
 						projectPath = absPath
+						
+						r, err := git.PlainInit(projectPath, false)
+						if err != nil {
+							writeCommandOut(err.Error()+"\n", projectPath, liveStart)
+							continue
+						}
+
+						liveStart = true
+
+						go watch(r, projectPath)
 
 						err = os.Chdir(projectPath)
 						if err != nil {
@@ -178,7 +294,6 @@ func main() {
 							continue
 						}
 
-						liveStart = true
 						continue
 					} else if secondCommandValue == "resume" {
 						if liveStart {
@@ -190,14 +305,31 @@ func main() {
 							writeCommandOut(err.Error()+"\n", projectPath, liveStart)
 							continue
 						}
+
 						if _, err := os.Stat(absPath); os.IsNotExist(err) {
 							writeCommandOut("File doesn't exists\n", projectPath, liveStart)
 							continue
 						}
 
 						projectPath = absPath
+
 						// fmt.Println(absPath)
+
+						r, err := git.PlainOpen(projectPath)
+						if err != nil {
+							writeCommandOut(err.Error()+"\n", projectPath, liveStart)
+							continue
+						}
+
 						liveStart = true
+
+						go watch(r, projectPath)
+
+						err = os.Chdir(projectPath)
+						if err != nil {
+							writeCommandOut(err.Error()+"\n", projectPath, liveStart)
+							continue
+						}
 					} else {
 						liveCommandUsage(projectPath)
 						continue
