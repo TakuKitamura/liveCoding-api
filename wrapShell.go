@@ -11,6 +11,8 @@ import (
 	"strings"
 )
 
+const CUI_LOG = ".cui.log"
+
 func remove(strings []string, search string) []string {
 	result := []string{}
 	for _, v := range strings {
@@ -25,11 +27,11 @@ func writeCommandInput(input string, projectPath string, liveStart bool) {
 	if liveStart == false {
 		return
 	}
-	file, err := os.OpenFile(projectPath+"/cui.log", os.O_RDWR|os.O_CREATE|os.O_APPEND, 0644)
+	file, err := os.OpenFile(projectPath+"/"+CUI_LOG, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0644)
 	if err != nil {
 		log.Fatal(err)
 	}
-	// defer
+
 	fmt.Fprintln(file, "$ "+input)
 	file.Close()
 }
@@ -39,11 +41,11 @@ func writeCommandOut(out string, projectPath string, liveStart bool) {
 	if liveStart == false {
 		return
 	}
-	file, err := os.OpenFile(projectPath+"/cui.log", os.O_RDWR|os.O_CREATE|os.O_APPEND, 0644)
+	file, err := os.OpenFile(projectPath+"/"+CUI_LOG, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0644)
 	if err != nil {
 		log.Fatal(err)
 	}
-	// defer
+
 	fmt.Fprint(file, out)
 	file.Close()
 }
@@ -59,11 +61,7 @@ func main() {
 	writer := buffer
 	liveStart := false
 
-	// err := os.Chdir(projectPath)
-	// if err != nil {
-	// 	fmt.Print(err.Error())
-	// 	return
-	// }
+	fmt.Println("\x1b[32mWelcome Live Coding Capture! (v0.0.1)\x1b[0m")
 
 	for {
 		pwd, err := os.Getwd()
@@ -86,18 +84,10 @@ func main() {
 		}
 
 		currentPath := strings.Replace(pwd, home, "~", 1)
-		// fmt.Println(p)
 		scanner := bufio.NewScanner(os.Stdin)
 		fmt.Printf("\x1b[34m%s\x1b[0m \x1b[31m(%s)\x1b[0m %s ", currentPath, liveStatus, "$")
 		scanner.Scan()
 		line := scanner.Text()
-
-		// file, err := os.OpenFile(projectPath+"/cui.log", os.O_RDWR|os.O_CREATE|os.O_APPEND, 0666)
-		// if err != nil {
-		// 	log.Fatal(err)
-		// }
-		// // defer
-		// fmt.Fprintln(file, "$ "+line)
 
 		cmdSplit := strings.Split(line, " ")
 		cmdSplit = remove(cmdSplit, "")
@@ -106,14 +96,7 @@ func main() {
 			firstCommandName := cmdSplit[0]
 			if firstCommandName == "cd" {
 				writeCommandInput(line, projectPath, liveStart)
-				if len(cmdSplit) > 1 {
-					err := os.Chdir(cmdSplit[1])
-					if err != nil {
-						writeCommandOut(err.Error()+"\n", projectPath, liveStart)
-						continue
-					}
-					continue
-				} else {
+				if len(cmdSplit) == 1 {
 					home, err := os.UserHomeDir()
 					if err != nil {
 						writeCommandOut(err.Error()+"\n", projectPath, liveStart)
@@ -124,6 +107,27 @@ func main() {
 						writeCommandOut(err.Error()+"\n", projectPath, liveStart)
 						continue
 					}
+					continue
+				} else if len(cmdSplit) == 2 {
+					secondCommandValue := cmdSplit[1]
+
+					if secondCommandValue == "~" {
+						err := os.Chdir(home)
+						if err != nil {
+							writeCommandOut(err.Error()+"\n", projectPath, liveStart)
+							continue
+						}
+						continue
+					}
+
+					err := os.Chdir(secondCommandValue)
+					if err != nil {
+						writeCommandOut(err.Error()+"\n", projectPath, liveStart)
+						continue
+					}
+					continue
+				} else {
+					writeCommandOut("cd args are invalid.\n", projectPath, liveStart)
 					continue
 				}
 			} else if firstCommandName == "live" {
@@ -168,7 +172,12 @@ func main() {
 
 						projectPath = absPath
 
-						// fmt.Println(absPath)
+						err = os.Chdir(projectPath)
+						if err != nil {
+							writeCommandOut(err.Error()+"\n", projectPath, liveStart)
+							continue
+						}
+
 						liveStart = true
 						continue
 					} else if secondCommandValue == "resume" {
@@ -205,7 +214,6 @@ func main() {
 
 				cmd.Run()
 				out := buffer.String()
-				// fmt.Print(out)
 				buffer.Reset()
 
 				writeCommandOut(out, projectPath, liveStart)
