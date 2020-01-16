@@ -23,4 +23,13 @@ func TestExampleSuccess(t *testing.T) {
 	if commands.Content != "見出し1" {
 		t.Fatalf("failed test4")
 	}
+
+	err, commands = util.GetCommands("//@ \"content\": \"見出し1\"", "plaintext")
+	if err != nil {
+		t.Fatalf("failed test3 %s", err.Error())
+	}
+
+	if commands.Content != "見出し1" {
+		t.Fatalf("failed test4")
+	}
 }
