@@ -1,17 +1,25 @@
 package main
 
 import (
+	"archive/tar"
+	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"io/ioutil"
 	"liveCoding-api/util"
 	"log"
+	"math/rand"
 	"net/http"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"time"
 
 	"go.mongodb.org/mongo-driver/bson"
@@ -19,6 +27,7 @@ import (
 	"go.mongodb.org/mongo-driver/mongo/options"
 	"gopkg.in/src-d/go-git.v4"
 	"gopkg.in/src-d/go-git.v4/plumbing"
+	"gopkg.in/src-d/go-git.v4/plumbing/object"
 )
 
 type Config struct {
@@ -62,6 +71,30 @@ type ErrorResponse struct {
 }
 
 type ErrorsResponse []ErrorResponse
+
+type LiveUpload struct {
+	AssignProjectName   string `json:"assignProjectName" bson:"assign_project_name"`
+	OriginalProjectName string `json:"originalProjectName" bson:"original_project_name"`
+	HostedProjectPath   string `json:"hostedProjectPath" bson:"hosted_project_path"`
+}
+
+type LiveUploadResponse struct {
+	URL string `json:"url"`
+}
+
+type LiveUploadsResponse []LiveUploadResponse
+
+type Commit struct {
+	ProjectPath string `bson:"project_path"`
+	ProjectName string `bson:"project_name"`
+	projectPath string `bson:"project_path"`
+	Hash        string `bson:"hash"`
+	Time        int64  `bson:"time"`
+	ID          int    `bson:"id"`
+	// Files       map[string]string `bson:"files"`
+}
+
+type Commits []Commit
 
 func responseJSON(w http.ResponseWriter, code int, data interface{}) {
 	w.Header().Set("Access-Control-Allow-Origin", "*")
@@ -114,19 +147,296 @@ func dirwalk(dir string) (error, []string) {
 	return nil, paths
 }
 
-func liveListRequest() http.HandlerFunc {
+func randomText(length int) string {
+	rand.Seed(time.Now().UnixNano())
+	const charSet = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+	b := make([]byte, length)
+	for i := range b {
+		b[i] = charSet[rand.Intn(len(charSet))]
+	}
+
+	return string(b)
+}
+
+// Copyright 2017 The Go Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style
+// license that can be found in the LICENSE file.
+func untar(r io.Reader, dir string) (err error) {
+	t0 := time.Now()
+	nFiles := 0
+	madeDir := map[string]bool{}
+	defer func() {
+		td := time.Since(t0)
+		if err == nil {
+			// log.Printf("extracted tarball into %s: %d files, %d dirs (%v)", dir, nFiles, len(madeDir), td)
+		} else {
+			log.Printf("error extracting tarball into %s after %d files, %d dirs, %v: %v", dir, nFiles, len(madeDir), td, err)
+		}
+	}()
+	zr, err := gzip.NewReader(r)
+	if err != nil {
+		return fmt.Errorf("requires gzip-compressed body: %v", err)
+	}
+	tr := tar.NewReader(zr)
+	loggedChtimesError := false
+	for {
+		f, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			log.Printf("tar reading error: %v", err)
+			return fmt.Errorf("tar error: %v", err)
+		}
+		if !validRelPath(f.Name) {
+			return fmt.Errorf("tar contained invalid name error %q", f.Name)
+		}
+		rel := filepath.FromSlash(f.Name)
+		abs := filepath.Join(dir, rel)
+
+		fi := f.FileInfo()
+		mode := fi.Mode()
+		switch {
+		case mode.IsRegular():
+			// Make the directory. This is redundant because it should
+			// already be made by a directory entry in the tar
+			// beforehand. Thus, don't check for errors; the next
+			// write will fail with the same error.
+			dir := filepath.Dir(abs)
+			if !madeDir[dir] {
+				if err := os.MkdirAll(filepath.Dir(abs), 0755); err != nil {
+					return err
+				}
+				madeDir[dir] = true
+			}
+			wf, err := os.OpenFile(abs, os.O_RDWR|os.O_CREATE|os.O_TRUNC, mode.Perm())
+			if err != nil {
+				return err
+			}
+			n, err := io.Copy(wf, tr)
+			if closeErr := wf.Close(); closeErr != nil && err == nil {
+				err = closeErr
+			}
+			if err != nil {
+				return fmt.Errorf("error writing to %s: %v", abs, err)
+			}
+			if n != f.Size {
+				return fmt.Errorf("only wrote %d bytes to %s; expected %d", n, abs, f.Size)
+			}
+			modTime := f.ModTime
+			if modTime.After(t0) {
+				// Clamp modtimes at system time. See
+				// golang.org/issue/19062 when clock on
+				// buildlet was behind the gitmirror server
+				// doing the git-archive.
+				modTime = t0
+			}
+			if !modTime.IsZero() {
+				if err := os.Chtimes(abs, modTime, modTime); err != nil && !loggedChtimesError {
+					// benign error. Gerrit doesn't even set the
+					// modtime in these, and we don't end up relying
+					// on it anywhere (the gomote push command relies
+					// on digests only), so this is a little pointless
+					// for now.
+					log.Printf("error changing modtime: %v (further Chtimes errors suppressed)", err)
+					loggedChtimesError = true // once is enough
+				}
+			}
+			nFiles++
+		case mode.IsDir():
+			if err := os.MkdirAll(abs, 0755); err != nil {
+				return err
+			}
+			madeDir[abs] = true
+		default:
+			return fmt.Errorf("tar file entry %s contained unsupported file type %v", f.Name, mode)
+		}
+	}
+	return nil
+}
+
+func validRelativeDir(dir string) bool {
+	if strings.Contains(dir, `\`) || path.IsAbs(dir) {
+		return false
+	}
+	dir = path.Clean(dir)
+	if strings.HasPrefix(dir, "../") || strings.HasSuffix(dir, "/..") || dir == ".." {
+		return false
+	}
+	return true
+}
+
+func validRelPath(p string) bool {
+	if p == "" || strings.Contains(p, `\`) || strings.HasPrefix(p, "/") || strings.Contains(p, "../") {
+		return false
+	}
+	return true
+}
+
+// func liveListRequest() http.HandlerFunc {
+// 	return func(w http.ResponseWriter, r *http.Request) {
+// 		switch r.Method {
+// 		case "OPTIONS":
+// 			CORSforOptions(&w)
+// 			return
+// 		case "GET":
+// 			// requestBody, err := ioutil.ReadAll(r.Body)
+// 			// defer r.Body.Close()
+// 			// if err != nil {
+// 			// 	responseErrorJSON(w, http.StatusInternalServerError, err.Error())
+// 			// 	return
+// 			// }
+
+// 			ctx, _ := context.WithTimeout(context.Background(), 10*time.Second)
+// 			client, err := mongo.Connect(ctx, options.Client().ApplyURI("mongodb://localhost:27017"))
+// 			if err != nil {
+// 				responseErrorJSON(w, http.StatusInternalServerError, err.Error())
+// 				return
+// 			}
+// 			defer client.Disconnect(ctx)
+
+// 			liveCodingCollection := client.Database("liveCoding").Collection("commit")
+
+// 			pipeline := bson.A{
+// 				bson.D{{"$group", bson.D{{"_id", "$project_path"}}}},
+// 			}
+// 			cur, err := liveCodingCollection.Aggregate(ctx, pipeline)
+// 			if err != nil {
+// 				responseErrorJSON(w, http.StatusInternalServerError, err.Error())
+// 				return
+// 			}
+
+// 			projectsNameMap := []map[string]string{}
+
+// 			err = cur.All(ctx, &projectsNameMap)
+// 			if err != nil {
+// 				responseErrorJSON(w, http.StatusInternalServerError, err.Error())
+// 				return
+// 			}
+
+// 			projectsName := []string{}
+
+// 			for _, value := range projectsNameMap {
+// 				projectsName = append(projectsName, value["_id"])
+// 			}
+
+// 			// fmt.Println(projectsNameMap)
+
+// 			// fmt.Println(requestBody)
+
+// 			responseJSON(w, http.StatusOK, projectsName)
+// 		default:
+// 			responseErrorJSON(w, http.StatusMethodNotAllowed, "Sorry, only GET method is supported.")
+// 			return
+// 		}
+// 	}
+// }
+
+func liveUploadRequest() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case "OPTIONS":
 			CORSforOptions(&w)
 			return
-		case "GET":
-			// requestBody, err := ioutil.ReadAll(r.Body)
-			// defer r.Body.Close()
+		case "POST":
+			if r.Close == true {
+				return
+			}
+
+			queryKeys := r.URL.Query()
+
+			queryKey, ok := queryKeys["projectName"]
+
+			if !ok || len(queryKey[0]) < 1 {
+				responseErrorJSON(w, http.StatusInternalServerError, "url query 'projectName' is missing")
+				return
+			}
+
+			projectName := queryKey[0]
+
+			if strings.Contains(projectName, "/") || strings.Contains(projectName, "\\") {
+				responseErrorJSON(w, http.StatusInternalServerError, "invalid projectName.")
+				return
+			}
+
+			// 10MB Limit
+			requestBody, err := ioutil.ReadAll(io.LimitReader(r.Body, 10000000))
+			defer r.Body.Close()
+			if err != nil {
+				responseErrorJSON(w, http.StatusInternalServerError, err.Error())
+				return
+			}
+
+			r := bytes.NewReader(requestBody)
+
+			liveLogPath := "./livelog"
+
+			if _, err := os.Stat(liveLogPath); os.IsNotExist(err) {
+				err = os.Mkdir(liveLogPath, 0775)
+				if err != nil {
+					responseErrorJSON(w, http.StatusInternalServerError, err.Error())
+					return
+				}
+			}
+
+			absliveLogPath, err := filepath.Abs(liveLogPath)
+			if err != nil {
+				responseErrorJSON(w, http.StatusInternalServerError, "upload failed")
+				return
+			}
+
+			assignProjectNameLength := 20
+			assignProjectName := randomText(assignProjectNameLength)
+
+			hostedProjectPath := absliveLogPath + "/" + assignProjectName
+			err = os.Mkdir(hostedProjectPath, 0775)
+			if err != nil {
+				// os.RemoveAll(hostedProjectPath)
+				responseErrorJSON(w, http.StatusInternalServerError, err.Error())
+				return
+			}
+
+			// fileToWrite, err := os.OpenFile("./compress.tar.gzip", os.O_CREATE|os.O_RDWR, os.FileMode(0644))
 			// if err != nil {
-			// 	responseErrorJSON(w, http.StatusInternalServerError, err.Error())
-			// 	return
+			// 	panic(err)
 			// }
+			// if _, err := io.Copy(fileToWrite, r); err != nil {
+			// 	panic(err)
+			// }
+
+			prevDir, err := filepath.Abs(".")
+			if err != nil {
+				responseErrorJSON(w, http.StatusInternalServerError, err.Error())
+				return
+			}
+
+			err = os.Chdir(hostedProjectPath)
+			if err != nil {
+				responseErrorJSON(w, http.StatusInternalServerError, err.Error())
+				return
+			}
+
+			err = untar(r, ".")
+			if err != nil {
+				// os.RemoveAll(hostedProjectPath)
+				responseErrorJSON(w, http.StatusInternalServerError, "upload failed")
+				return
+			}
+
+			cmd := exec.Command("git", "stash")
+			err = cmd.Run()
+			if err != nil {
+				responseErrorJSON(w, http.StatusInternalServerError, err.Error())
+				return
+			}
+
+			err = os.Chdir(prevDir)
+			if err != nil {
+				responseErrorJSON(w, http.StatusInternalServerError, err.Error())
+				return
+			}
+
+			// hostedPath := hostedProjectPath + "/" + projectName
 
 			ctx, _ := context.WithTimeout(context.Background(), 10*time.Second)
 			client, err := mongo.Connect(ctx, options.Client().ApplyURI("mongodb://localhost:27017"))
@@ -136,39 +446,79 @@ func liveListRequest() http.HandlerFunc {
 			}
 			defer client.Disconnect(ctx)
 
-			liveCodingCollection := client.Database("liveCoding").Collection("commit")
+			liveUploadCollection := client.Database("liveCoding").Collection("upload")
 
-			pipeline := bson.A{
-				bson.D{{"$group", bson.D{{"_id", "$project_path"}}}},
+			liveUpload := LiveUpload{
+				AssignProjectName:   assignProjectName,
+				OriginalProjectName: projectName,
+				HostedProjectPath:   hostedProjectPath,
 			}
-			cur, err := liveCodingCollection.Aggregate(ctx, pipeline)
+
+			_, err = liveUploadCollection.InsertOne(ctx, liveUpload)
+			if err != nil {
+				// os.RemoveAll(hostedProjectPath)
+				responseErrorJSON(w, http.StatusInternalServerError, err.Error())
+				return
+			}
+
+			// fmt.Println(hostedProjectPath)
+			gitRepo, err := git.PlainOpen(hostedProjectPath)
 			if err != nil {
 				responseErrorJSON(w, http.StatusInternalServerError, err.Error())
 				return
 			}
 
-			projectsNameMap := []map[string]string{}
-
-			err = cur.All(ctx, &projectsNameMap)
+			cIter, err := gitRepo.Log(&git.LogOptions{All: false})
 			if err != nil {
 				responseErrorJSON(w, http.StatusInternalServerError, err.Error())
 				return
 			}
 
-			projectsName := []string{}
-
-			for _, value := range projectsNameMap {
-				projectsName = append(projectsName, value["_id"])
+			var commitObjects []*object.Commit
+			err = cIter.ForEach(func(commitObj *object.Commit) error {
+				// fmt.Println(commitObj.Hash)
+				commitObjects = append(commitObjects, commitObj)
+				return nil
+			})
+			if err != nil {
+				responseErrorJSON(w, http.StatusInternalServerError, err.Error())
+				return
 			}
 
-			// fmt.Println(projectsNameMap)
+			for i, j := 0, len(commitObjects)-1; i < j; i, j = i+1, j-1 {
+				commitObjects[i], commitObjects[j] = commitObjects[j], commitObjects[i]
+			}
 
-			// fmt.Println(requestBody)
+			commitCollection := client.Database("liveCoding").Collection("commit")
 
-			responseJSON(w, http.StatusOK, projectsName)
-		default:
-			responseErrorJSON(w, http.StatusMethodNotAllowed, "Sorry, only GET method is supported.")
-			return
+			for i := 0; i < len(commitObjects); i++ {
+				commitObject := commitObjects[i]
+				// fmt.Println(commitObject.Hash)
+
+				commitTime, err := strconv.ParseInt(commitObject.Message, 10, 64)
+				if err != nil {
+					commitTime = -1
+				}
+				commitStruct := Commit{
+					ProjectPath: hostedProjectPath,
+					ProjectName: projectName,
+					Hash:        commitObject.Hash.String(),
+					Time:        commitTime,
+					ID:          i,
+				}
+
+				_, err = commitCollection.InsertOne(ctx, commitStruct)
+				if err != nil {
+					responseErrorJSON(w, http.StatusInternalServerError, err.Error())
+					return
+				}
+
+				// fmt.Println(requestBody, 111)
+			}
+
+			liveUploadsResponse := LiveUploadsResponse{LiveUploadResponse{URL: "https://localhost:8000/?id=" + assignProjectName}}
+
+			responseJSON(w, http.StatusOK, liveUploadsResponse)
 		}
 	}
 }
@@ -263,7 +613,7 @@ func liveRequest() http.HandlerFunc {
 			cmd.Dir = wt.Filesystem.Root()
 			err = cmd.Run()
 			if err != nil {
-				fmt.Println(err, 111)
+				// fmt.Println(err, 111)
 				responseErrorJSON(w, http.StatusInternalServerError, err.Error())
 				return
 			}
@@ -276,7 +626,7 @@ func liveRequest() http.HandlerFunc {
 					Branch: plumbing.NewBranchReferenceName("master"),
 				})
 				if err != nil {
-					fmt.Println(err, 222)
+					// fmt.Println(err, 222)
 					responseErrorJSON(w, http.StatusInternalServerError, err.Error())
 					return
 				}
@@ -285,7 +635,7 @@ func liveRequest() http.HandlerFunc {
 					Hash: plumbing.NewHash(liveResponse.Hash),
 				})
 				if err != nil {
-					fmt.Println(err, 333)
+					// fmt.Println(err, 333)
 					responseErrorJSON(w, http.StatusInternalServerError, err.Error())
 					return
 				}
@@ -372,7 +722,7 @@ func liveRequest() http.HandlerFunc {
 					Branch: plumbing.NewBranchReferenceName("master"),
 				})
 				if err != nil {
-					fmt.Println(err, 777)
+					// fmt.Println(err, 777)
 					responseErrorJSON(w, http.StatusInternalServerError, err.Error())
 					return
 				}
@@ -432,10 +782,15 @@ func main() {
 
 	apiEndpointName := "/api"
 	liveEndpointName := apiEndpointName + "/live"
-	liveListEndpointName := apiEndpointName + "/liveList"
+	liveUploadEndpointName := liveEndpointName + "/upload"
+	// liveListEndpointName := apiEndpointName + "/liveList"
 
 	http.HandleFunc(liveEndpointName, liveRequest())
-	http.HandleFunc(liveListEndpointName, liveListRequest())
+	http.HandleFunc(liveUploadEndpointName, liveUploadRequest())
+	// http.HandleFunc(liveListEndpointName, liveListRequesst())
+
+	// liveListEndpointName := apiEndpointName + "/liveList"
+
 	schema := config.Schema
 	host := config.Host
 	port := config.Port

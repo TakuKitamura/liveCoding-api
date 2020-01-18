@@ -25,3 +25,6 @@ cert_key
 
 # config
 config.json
+
+# livelog
+livelog
