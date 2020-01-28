@@ -835,24 +835,28 @@ func main() {
 	port := config.Port
 	addr := host + ":" + port
 	fmt.Println("LISTEN: ", schema+"://"+addr)
-	http.ListenAndServe(addr, nil)
-	// 証明書の作成参考: https://ozuma.hatenablog.jp/entry/20130511/1368284304
-	/*
-	if envType == envTypeTest {
-		err = http.ListenAndServeTLS(addr, "cert_key/test/cert.pem", "cert_key/test/key.pem", nil)
-		if err != nil {
-			log.Println(err)
-			os.Exit(1)
-		}
-	} else if envType == envTypeProduct {
-		err = http.ListenAndServeTLS(addr, "cert_key/product/cert.pem", "cert_key/product/key.pem", nil)
-		if err != nil {
-			log.Println(err)
-			os.Exit(1)
-		}
-	} else {
-		log.Println("config-type is invalid.")
+	err = http.ListenAndServe(addr, nil)
+	if err != nil {
+		log.Println(err)
 		os.Exit(1)
 	}
+	// 証明書の作成参考: https://ozuma.hatenablog.jp/entry/20130511/1368284304
+	/*
+		if envType == envTypeTest {
+			err = http.ListenAndServeTLS(addr, "cert_key/test/cert.pem", "cert_key/test/key.pem", nil)
+			if err != nil {
+				log.Println(err)
+				os.Exit(1)
+			}
+		} else if envType == envTypeProduct {
+			err = http.ListenAndServeTLS(addr, "cert_key/product/cert.pem", "cert_key/product/key.pem", nil)
+			if err != nil {
+				log.Println(err)
+				os.Exit(1)
+			}
+		} else {
+			log.Println("config-type is invalid.")
+			os.Exit(1)
+		}
 	*/
 }
