@@ -96,6 +96,8 @@ type Commit struct {
 
 type Commits []Commit
 
+const liveLogPath = "livelog"
+
 func responseJSON(w http.ResponseWriter, code int, data interface{}) {
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Header().Set("Content-Type", "application/json")
@@ -369,8 +371,6 @@ func liveUploadRequest() http.HandlerFunc {
 
 			r := bytes.NewReader(requestBody)
 
-			liveLogPath := "./livelog"
-
 			if _, err := os.Stat(liveLogPath); os.IsNotExist(err) {
 				err = os.Mkdir(liveLogPath, 0775)
 				if err != nil {
@@ -534,19 +534,30 @@ func liveRequest() http.HandlerFunc {
 				return
 			}
 
-			requestBody, err := ioutil.ReadAll(r.Body)
-			defer r.Body.Close()
-			if err != nil {
-				responseErrorJSON(w, http.StatusInternalServerError, err.Error())
-				return
-			}
-			liveRequest := LiveRequest{ProjectPath: ""}
+			queryKeys := r.URL.Query()
 
-			err = json.Unmarshal(requestBody, &liveRequest)
-			if err != nil {
-				responseErrorJSON(w, http.StatusInternalServerError, err.Error())
+			queryKey, ok := queryKeys["id"]
+
+			if !ok || len(queryKey[0]) < 1 {
+				responseErrorJSON(w, http.StatusInternalServerError, "url query 'id' is missing")
 				return
 			}
+
+			id := queryKey[0]
+
+			// requestBody, err := ioutil.ReadAll(r.Body)
+			// defer r.Body.Close()
+			// if err != nil {
+			// 	responseErrorJSON(w, http.StatusInternalServerError, err.Error())
+			// 	return
+			// }
+			// liveRequest := LiveRequest{ProjectPath: ""}
+
+			// err = json.Unmarshal(requestBody, &liveRequest)
+			// if err != nil {
+			// 	responseErrorJSON(w, http.StatusInternalServerError, err.Error())
+			// 	return
+			// }
 
 			// if liveRequest.ID == -1 {
 			// 	responseErrorJSON(w, http.StatusInternalServerError, "ID not found.")
@@ -561,10 +572,22 @@ func liveRequest() http.HandlerFunc {
 			}
 			defer client.Disconnect(ctx)
 
+			uploadCollection := client.Database("liveCoding").Collection("upload")
+
+			filter := bson.M{"assign_project_name": id}
+			result := uploadCollection.FindOne(ctx, filter)
+
+			liveUpload := LiveUpload{}
+			err = result.Decode(&liveUpload)
+			if err != nil {
+				responseErrorJSON(w, http.StatusInternalServerError, err.Error())
+				return
+			}
+
 			liveCodingCollection := client.Database("liveCoding").Collection("commit")
 
 			// fmt.Println(liveRequest.ProjectPath)
-			filter := bson.M{"project_path": liveRequest.ProjectPath}
+			filter = bson.M{"project_path": liveUpload.HostedProjectPath}
 			cur, err := liveCodingCollection.Find(ctx, filter)
 			if err != nil {
 				responseErrorJSON(w, http.StatusInternalServerError, err.Error())
@@ -588,19 +611,26 @@ func liveRequest() http.HandlerFunc {
 			// fmt.Println(livesResponse)
 
 			// TODO: for の外に出す｡
+			// var repo *git.Repository
+			// if _, err := os.Stat(liveRequest.ProjectPath); os.IsNotExist(err) {
+			// 	repo, err = git.PlainInit(liveRequest.ProjectPath, false)
+			// 	if err != nil {
+			// 		responseErrorJSON(w, http.StatusInternalServerError, err.Error())
+			// 		return
+			// 	}
+			// } else {
+			// 	repo, err = git.PlainOpen(liveRequest.ProjectPath)
+			// 	if err != nil {
+			// 		responseErrorJSON(w, http.StatusInternalServerError, err.Error())
+			// 		return
+			// 	}
+			// }
+
 			var repo *git.Repository
-			if _, err := os.Stat(liveRequest.ProjectPath); os.IsNotExist(err) {
-				repo, err = git.PlainInit(liveRequest.ProjectPath, false)
-				if err != nil {
-					responseErrorJSON(w, http.StatusInternalServerError, err.Error())
-					return
-				}
-			} else {
-				repo, err = git.PlainOpen(liveRequest.ProjectPath)
-				if err != nil {
-					responseErrorJSON(w, http.StatusInternalServerError, err.Error())
-					return
-				}
+			repo, err = git.PlainOpen(liveUpload.HostedProjectPath)
+			if err != nil {
+				responseErrorJSON(w, http.StatusInternalServerError, err.Error())
+				return
 			}
 
 			wt, err := repo.Worktree()
@@ -640,7 +670,7 @@ func liveRequest() http.HandlerFunc {
 					return
 				}
 
-				fileInfos, err := ioutil.ReadDir(liveRequest.ProjectPath)
+				fileInfos, err := ioutil.ReadDir(liveUpload.HostedProjectPath)
 				if err != nil {
 					log.Fatal(err)
 				}
@@ -649,7 +679,7 @@ func liveRequest() http.HandlerFunc {
 
 				for _, file := range fileInfos {
 					fileName := file.Name()
-					absPath := liveRequest.ProjectPath + "/" + fileName
+					absPath := liveUpload.HostedProjectPath + "/" + fileName
 					if file.IsDir() {
 						if fileName == ".git" {
 							continue
@@ -699,6 +729,8 @@ func liveRequest() http.HandlerFunc {
 						} else {
 							if extention == ".py" {
 								fileInfoStruct.Lang = "python"
+							} else if extention == ".html" {
+								fileInfoStruct.Lang = "html"
 							} else {
 								fileInfoStruct.Lang = plaintext
 							}
@@ -715,7 +747,9 @@ func liveRequest() http.HandlerFunc {
 
 					fileInfoStruct.Commands = commands
 
-					fileInfo[path] = fileInfoStruct
+					projectPath := strings.Replace(path, liveUpload.HostedProjectPath, liveUpload.OriginalProjectName, 1)
+
+					fileInfo[projectPath] = fileInfoStruct
 				}
 
 				err = wt.Checkout(&git.CheckoutOptions{
@@ -729,6 +763,11 @@ func liveRequest() http.HandlerFunc {
 
 				livesResponse[i].Files = fileInfo
 			}
+
+			for i := 0; i < len(livesResponse); i++ {
+				livesResponse[i].ProjectPath = ""
+			}
+
 			// fmt.Println(livesResponse)
 			responseJSON(w, http.StatusOK, livesResponse)
 			return
