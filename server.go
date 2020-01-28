@@ -342,9 +342,9 @@ func liveUploadRequest() http.HandlerFunc {
 			CORSforOptions(&w)
 			return
 		case "POST":
-			if r.Close == true {
-				return
-			}
+			// if r.Close == true {
+			// 	return
+			// }
 
 			queryKeys := r.URL.Query()
 
@@ -534,9 +534,9 @@ func liveRequest() http.HandlerFunc {
 			CORSforOptions(&w)
 			return
 		case "POST":
-			if r.Close == true {
-				return
-			}
+			// if r.Close == true {
+			// 	return
+			// }
 
 			queryKeys := r.URL.Query()
 
