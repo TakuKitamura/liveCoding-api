@@ -520,7 +520,6 @@ func liveUploadRequest() http.HandlerFunc {
 			liveUploadsResponse := LiveUploadsResponse{LiveUploadResponse{URL: "https://localhost:8000/?id=" + assignProjectName}}
 
 			responseJSON(w, http.StatusOK, liveUploadsResponse)
-		}
 		default:
 			responseErrorJSON(w, http.StatusMethodNotAllowed, "Sorry, only GET method is supported.")
 			return
