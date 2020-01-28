@@ -735,6 +735,8 @@ func liveRequest() http.HandlerFunc {
 								fileInfoStruct.Lang = "python"
 							} else if extention == ".html" {
 								fileInfoStruct.Lang = "html"
+							} else if extention == ".js" {
+								fileInfoStruct.Lang = "javascript"
 							} else {
 								fileInfoStruct.Lang = plaintext
 							}
