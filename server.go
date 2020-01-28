@@ -796,7 +796,9 @@ func main() {
 	port := config.Port
 	addr := host + ":" + port
 	fmt.Println("LISTEN: ", schema+"://"+addr)
+	http.ListenAndServe(addr, nil)
 	// 証明書の作成参考: https://ozuma.hatenablog.jp/entry/20130511/1368284304
+	/*
 	if envType == envTypeTest {
 		err = http.ListenAndServeTLS(addr, "cert_key/test/cert.pem", "cert_key/test/key.pem", nil)
 		if err != nil {
@@ -813,4 +815,5 @@ func main() {
 		log.Println("config-type is invalid.")
 		os.Exit(1)
 	}
+	*/
 }

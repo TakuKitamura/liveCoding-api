@@ -245,11 +245,10 @@
   version = "v4.3.2"
 
 [[projects]]
-  digest = "1:dc6002bdbb9f152739ef60814716ce0a87fc9b21834151e1ee1dd843d1bbec5f"
+  digest = "1:b2ad0a18676cd4d5b4b180709c1ea34dbabd74b3d7db0cc01e6d287d5f1e3a99"
   name = "gopkg.in/src-d/go-git.v4"
   packages = [
     ".",
-    "_examples",
     "config",
     "internal/revision",
     "internal/url",
@@ -307,10 +306,11 @@
   analyzer-name = "dep"
   analyzer-version = 1
   input-imports = [
+    "go.mongodb.org/mongo-driver/bson",
     "go.mongodb.org/mongo-driver/mongo",
     "go.mongodb.org/mongo-driver/mongo/options",
     "gopkg.in/src-d/go-git.v4",
-    "gopkg.in/src-d/go-git.v4/_examples",
+    "gopkg.in/src-d/go-git.v4/plumbing",
     "gopkg.in/src-d/go-git.v4/plumbing/object",
   ]
   solver-name = "gps-cdcl"
