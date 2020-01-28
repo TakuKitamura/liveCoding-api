@@ -517,7 +517,7 @@ func liveUploadRequest() http.HandlerFunc {
 				// fmt.Println(requestBody, 111)
 			}
 
-			liveUploadsResponse := LiveUploadsResponse{LiveUploadResponse{URL: "https://localhost:8000/?id=" + assignProjectName}}
+			liveUploadsResponse := LiveUploadsResponse{LiveUploadResponse{URL: "https://live-coding.takukitamura.com/?id=" + assignProjectName}}
 
 			responseJSON(w, http.StatusOK, liveUploadsResponse)
 		default:
