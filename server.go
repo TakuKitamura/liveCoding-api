@@ -336,6 +336,7 @@ func validRelPath(p string) bool {
 
 func liveUploadRequest() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		fmt.Println(123)
 		switch r.Method {
 		case "OPTIONS":
 			CORSforOptions(&w)
@@ -519,6 +520,10 @@ func liveUploadRequest() http.HandlerFunc {
 			liveUploadsResponse := LiveUploadsResponse{LiveUploadResponse{URL: "https://localhost:8000/?id=" + assignProjectName}}
 
 			responseJSON(w, http.StatusOK, liveUploadsResponse)
+		}
+		default:
+			responseErrorJSON(w, http.StatusMethodNotAllowed, "Sorry, only GET method is supported.")
+			return
 		}
 	}
 }
